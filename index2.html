@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motion Agent-V: 100Hz 물리 궤적 및 선회 복원</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root {
+            --bg: #050505;
+            --card: #111;
+            --neon: #deff9a;
+            --accent: #3b82f6;
+            --purple: #a855f7;
+            --danger: #ef4444;
+            --orange: #f97316;
+        }
+
+        body { background-color: var(--bg); color: #fff; font-family: 'Pretendard', sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { border-bottom: 1px solid #333; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: flex-end; }
+        .title { font-size: 24px; font-weight: 800; color: var(--neon); margin: 0; }
+        
+        .grid { display: grid; grid-template-columns: 450px 1fr; gap: 25px; }
+        .card { background: var(--card); border: 1px solid #222; border-radius: 20px; padding: 25px; display: flex; flex-direction: column; }
+        
+        .raw-data-list { flex-grow: 1; height: 420px; overflow-y: auto; background: #000; border-radius: 12px; padding: 15px; font-family: 'Courier New', monospace; font-size: 11px; border: 1px solid #222; }
+        .data-item { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #111; color: #666; }
+        .data-item.knot { color: var(--neon); font-weight: bold; border-left: 3px solid var(--neon); padding-left: 10px; background: rgba(222, 255, 154, 0.05); }
+        .data-item.high-res { color: #aaa; }
+
+        .btn { background: var(--neon); color: #000; border: none; padding: 15px; border-radius: 12px; font-weight: 800; cursor: pointer; width: 100%; margin-top: 20px; transition: 0.2s; }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(222, 255, 154, 0.3); }
+
+        .charts-grid { display: grid; grid-template-rows: 1fr 1fr; gap: 20px; height: 600px; }
+        .chart-container { background: #000; border-radius: 15px; padding: 15px; border: 1px solid #222; position: relative; }
+        
+        .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-top: 20px; }
+        .stat-box { background: rgba(255,255,255,0.03); padding: 15px; border-radius: 12px; text-align: center; border: 1px solid #222; }
+        .stat-v { font-size: 20px; font-weight: 700; color: var(--neon); }
+        .stat-l { font-size: 10px; color: #666; text-transform: uppercase; margin-top: 5px; }
+
+        .physics-info { margin-top: 20px; font-size: 13px; line-height: 1.6; color: #888; }
+        .physics-info strong { color: #fff; }
+        .chart-label { position: absolute; top: 15px; left: 20px; font-size: 13px; font-weight: 700; color: #777; z-index: 10; text-transform: uppercase; letter-spacing: 0.5px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <div>
+            <h1 class="title"><i class="fa-solid fa-arrows-spin"></i> 100Hz 물리 궤적 및 선회 복원 시뮬레이터</h1>
+            <p style="font-size: 14px; color: #666; margin-top: 5px;">Manned DTG (1Hz) &rarr; 조향각 연동 2D 좌표 복원 (100Hz)</p>
+        </div>
+        <div style="text-align: right;">
+            <span style="background: var(--purple); color:#fff; padding: 6px 15px; border-radius: 5px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px;">2D 주행 경로 통합 분석</span>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="margin-top:0;"><i class="fa-solid fa-microchip"></i> 0.01초 단위 융합 데이터 로그</h3>
+            <div class="raw-data-list" id="log-list">
+                <div style="text-align: center; color: #444; margin-top: 150px;">'물리 엔진 가동' 클릭 시<br>속도, 이동거리, 좌표가 동시 산출됩니다.</div>
+            </div>
+            <button class="btn" onclick="startRestoration()">물리 엔진 가동 (Restoration)</button>
+            <div class="physics-info">
+                <strong>선회 복원 원리:</strong> 복원된 속도($v$)와 조향각($\delta$) 데이터를 기반으로 헤딩 각도($\psi = \int \dot{\psi} dt$)를 계산하고, 이를 다시 삼각함수로 적분하여 실시간 <strong>좌표(Trajectory)</strong>를 평면상에 복원합니다.
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-label">주행 물리 타임라인 (Speed & Distance)</div>
+                    <canvas id="hybridChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-label">2D 주행 평면 궤적 (X-Y Path Map)</div>
+                    <canvas id="pathChart"></canvas>
+                </div>
+            </div>
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-v" id="res-samples">0</div>
+                    <div class="stat-l">샘플 수 (0.01s)</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-v" style="color: var(--accent)" id="res-dist">0.0m</div>
+                    <div class="stat-l">총 이동 거리</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-v" style="color: var(--orange)" id="res-steering">0.0°</div>
+                    <div class="stat-l">최대 조향각</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-v" style="color: var(--danger)" id="res-g">0.00g</div>
+                    <div class="stat-l">최대 충격(G)</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let hybridChart, pathChart;
+    // 시연용 1Hz 원천 데이터 (속도 및 조향각 변화 포함)
+    const knots = [
+        {t: 0, v: 80, s: 0},   // 정속 주행
+        {t: 1, v: 78, s: 5},   // 완만한 선회 시작
+        {t: 2, v: 65, s: 15},  // 급격한 조향 개입
+        {t: 3, v: 30, s: 10},  // 제동 및 조향 복귀
+        {t: 4, v: 10, s: 2},   // 정지 직전
+        {t: 5, v: 0, s: 0}     // 완전 정지
+    ];
+
+    function initCharts() {
+        const ctxH = document.getElementById('hybridChart').getContext('2d');
+        hybridChart = new Chart(ctxH, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { 
+                        label: '속도 (km/h)', 
+                        yAxisID: 'y-speed', 
+                        data: [], 
+                        borderColor: '#deff9a', 
+                        borderWidth: 2, 
+                        pointRadius: 0, 
+                        tension: 0.4, 
+                        fill: false 
+                    },
+                    { 
+                        label: '이동 거리 (m)', 
+                        yAxisID: 'y-dist', 
+                        data: [], 
+                        borderColor: '#3b82f6', 
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)', 
+                        borderWidth: 1, 
+                        pointRadius: 0, 
+                        fill: true, 
+                        tension: 0.1 
+                    },
+                    { 
+                        label: '원천 데이터', 
+                        yAxisID: 'y-speed', 
+                        data: knots.map(k => ({x: k.t, y: k.v})), 
+                        borderColor: '#ef4444', 
+                        backgroundColor: '#ef4444', 
+                        showLine: false, 
+                        pointRadius: 7, 
+                        pointHoverRadius: 9,
+                        pointStyle: 'circle',
+                        zIndex: 20
+                    }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                layout: {
+                    padding: { top: 45, left: 10, right: 10, bottom: 0 } // 상단 글자 겹침 방지를 위한 패딩 확보
+                },
+                scales: {
+                    x: { type: 'linear', position: 'bottom', min: 0, max: 5, grid: { color: '#111' }, ticks: { color: '#444' } },
+                    'y-speed': { 
+                        type: 'linear', position: 'left', min: 0, max: 100, 
+                        ticks: { color: '#deff9a' }, 
+                        grid: { color: '#111' },
+                        title: { display: false }
+                    },
+                    'y-dist': { 
+                        type: 'linear', position: 'right', min: 0, max: 100, 
+                        ticks: { color: '#3b82f6' }, 
+                        grid: { display: false },
+                        title: { display: false }
+                    }
+                },
+                plugins: { 
+                    legend: { display: false },
+                    tooltip: { enabled: true }
+                }
+            }
+        });
+
+        const ctxP = document.getElementById('pathChart').getContext('2d');
+        pathChart = new Chart(ctxP, {
+            type: 'scatter',
+            data: {
+                datasets: [{
+                    label: '복원된 주행 경로 (X-Y)',
+                    data: [],
+                    borderColor: '#a855f7',
+                    borderWidth: 3,
+                    showLine: true,
+                    pointRadius: 0,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                layout: {
+                    padding: { top: 40, left: 10, right: 10, bottom: 10 }
+                },
+                scales: {
+                    x: { grid: { color: '#111' }, ticks: { color: '#444' }, title: { display: true, text: '횡방향 거리 (X, m)', color: '#444', font: { size: 10 } } },
+                    y: { grid: { color: '#111' }, ticks: { color: '#444' }, title: { display: true, text: '종방향 거리 (Y, m)', color: '#444', font: { size: 10 } } }
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+    }
+
+    async function startRestoration() {
+        const log = document.getElementById('log-list');
+        log.innerHTML = '';
+        const speedData = [], distData = [], pathData = [];
+        
+        let currentX = 0, currentY = 0; 
+        let currentHeading = 0;         
+        let totalDistance = 0;
+        let maxG = 0, maxSteering = 0;
+        let lastSpeedMS = knots[0].v / 3.6;
+
+        for (let i = 0; i < knots.length - 1; i++) {
+            const startK = knots[i], endK = knots[i+1];
+            
+            for (let j = 0; j < 100; j++) {
+                const progress = j / 100;
+                const subT = startK.t + progress;
+                
+                const eased = progress * progress * (3 - 2 * progress);
+                const restoredV = startK.v + (endK.v - startK.v) * eased;
+                const restoredSteer = startK.s + (endK.s - startK.s) * eased;
+                const speedMS = restoredV / 3.6;
+
+                const yawRate = (speedMS / 2.7) * Math.tan(restoredSteer * Math.PI / 180);
+                currentHeading += yawRate * 0.01;
+
+                const dy = speedMS * Math.cos(currentHeading) * 0.01;
+                const dx = speedMS * Math.sin(currentHeading) * 0.01;
+                currentX += dx;
+                currentY += dy;
+                totalDistance += speedMS * 0.01;
+
+                speedData.push({x: subT, y: restoredV});
+                distData.push({x: subT, y: totalDistance});
+                pathData.push({x: currentX, y: currentY});
+
+                const gForce = Math.abs(speedMS - lastSpeedMS) / (0.01 * 9.8);
+                if (gForce > maxG) maxG = gForce;
+                if (Math.abs(restoredSteer) > maxSteering) maxSteering = Math.abs(restoredSteer);
+                lastSpeedMS = speedMS;
+
+                if (j % 5 === 0) {
+                    const item = document.createElement('div');
+                    item.className = (j === 0) ? 'data-item knot' : 'data-item high-res';
+                    item.innerHTML = `<span>[${subT.toFixed(2)}s]</span> <span>${restoredV.toFixed(1)}km/h</span> <span>X:${currentX.toFixed(2)}</span> <span>Y:${currentY.toFixed(2)}</span>`;
+                    log.appendChild(item);
+                    log.scrollTop = log.scrollHeight;
+                }
+                
+                if (j % 10 === 0) {
+                    hybridChart.data.datasets[0].data = speedData;
+                    hybridChart.data.datasets[1].data = distData;
+                    hybridChart.update('none');
+                    
+                    pathChart.data.datasets[0].data = pathData;
+                    pathChart.update('none');
+
+                    document.getElementById('res-samples').innerText = speedData.length;
+                    document.getElementById('res-dist').innerText = totalDistance.toFixed(1) + 'm';
+                    document.getElementById('res-steering').innerText = maxSteering.toFixed(1) + '°';
+                    document.getElementById('res-g').innerText = maxG.toFixed(2) + 'g';
+                    await new Promise(r => setTimeout(r, 5));
+                }
+            }
+        }
+    }
+
+    window.onload = initCharts;
+</script>
+</body>
+</html>
